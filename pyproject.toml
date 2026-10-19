@@ -5,9 +5,29 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "vjepa-hand"
 version = "0.1.0"
-description = "V-JEPA Hand model architecture for egocentric two-hand reconstruction"
+description = "V-JEPA Hand video inference and mesh overlay"
 requires-python = ">=3.10"
-dependencies = ["torch>=2.1"]
+dependencies = [
+    "torch>=2.6",
+    "torchvision",
+    "timm>=1.0",
+    "einops>=0.8",
+    "safetensors>=0.4",
+    "huggingface-hub>=0.25",
+    "numpy>=1.26,<2",
+    "scipy>=1.11",
+    "smplx>=0.1.28",
+    "pyrender>=0.1.45",
+    "trimesh>=4",
+    "av>=13",
+]
+
+[project.optional-dependencies]
+demo = ["gradio>=5,<6"]
+space = ["gradio>=5,<6", "spaces"]
+
+[project.scripts]
+vjepa-hand = "vjepa_hand.inference:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
