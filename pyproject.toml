@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vjepa-hand"
+version = "0.1.0"
+description = "V-JEPA Hand model architecture for egocentric two-hand reconstruction"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.1"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vjepa_hand*"]
