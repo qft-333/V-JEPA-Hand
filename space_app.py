@@ -26,6 +26,7 @@ import numpy as np
 import torch
 from huggingface_hub import HfApi, hf_hub_download
 
+from vjepa_hand.camera import CAMERA_HELP, CameraIntrinsics, CameraRectification
 from vjepa_hand.geometry import HandMeshes
 from vjepa_hand.inference import VideoDemo, predict_parameters
 from vjepa_hand.loading import DEFAULT_MODEL_ID, file_sha256, load_model
@@ -119,14 +120,21 @@ def first_window(video: str) -> np.ndarray:
     return np.stack(frames)
 
 
-def render_duration(video: str | None) -> int:
+def render_duration(video: str | None, camera_intrinsics: str = "") -> int:
     if not video:
         raise gr.Error("Upload a video first.")
     try:
+        camera = CameraIntrinsics.parse(camera_intrinsics)
         with av.open(video) as reader:
             if not reader.streams.video:
                 raise ValueError("Input contains no video stream")
             stream = reader.streams.video[0]
+            if camera is not None:
+                if max(stream.width, stream.height) > 4096:
+                    raise ValueError("Calibrated demo accepts videos up to 4096 pixels per dimension")
+                rectification = CameraRectification(camera, stream.width, stream.height)
+                if rectification.width / rectification.height > 3:
+                    raise ValueError("The corrected crop exceeds the hosted demo's 3:1 aspect-ratio limit")
             if stream.frames <= 0:
                 return 120
             scale = max(1.0, stream.width * stream.height / (1280 * 720))
@@ -148,13 +156,21 @@ def create_space(
         LOGGER.warning(MISSING_MANO)
 
     @spaces.GPU(duration=60)
-    def check_model(video: str | None) -> dict:
+    def check_model(video: str | None, camera_intrinsics: str = "") -> dict:
         if not video:
             raise gr.Error("Upload a video first.")
         try:
             frames = first_window(video)
+            camera = CameraIntrinsics.parse(camera_intrinsics)
+            intrinsic = None
+            if camera is not None:
+                rectification = CameraRectification(camera, frames.shape[2], frames.shape[1])
+                if rectification.width / rectification.height > 3:
+                    raise ValueError("The corrected crop exceeds the hosted demo's 3:1 aspect-ratio limit")
+                frames = np.stack([rectification.apply(frame) for frame in frames])
+                intrinsic = rectification.intrinsics
             trajectory, intrinsics = predict_parameters(
-                model, frames, torch.device("cuda"), "bf16",
+                model, frames, torch.device("cuda"), "bf16", intrinsic,
             )
         except (ValueError, OSError, RuntimeError) as error:
             LOGGER.exception("Model check failed")
@@ -166,28 +182,33 @@ def create_space(
             "intrinsics_shape": list(intrinsics.shape),
             "finite_outputs": True,
             "positive_focal_lengths": True,
+            "camera_mode": "calibrated crop" if camera is not None else "predicted focal, assumed center",
+            "processed_width": frames.shape[2],
+            "processed_height": frames.shape[1],
         }
 
     @spaces.GPU(duration=render_duration)
-    def render_video(video: str | None) -> tuple[str, str]:
+    def render_video(video: str | None, camera_intrinsics: str = "") -> tuple[str, str]:
         if not mano_dir:
             raise gr.Error(MISSING_MANO)
         if not video:
             raise gr.Error("Upload a video first.")
         try:
+            camera = CameraIntrinsics.parse(camera_intrinsics)
             for previous in output_dir.glob("*.mp4"):
                 if previous.stat().st_mtime < time.time() - 3600:
                     previous.unlink()
             output = output_dir / f"{uuid.uuid4().hex}.mp4"
             configure_software_renderer()
             demo = VideoDemo(model, mano_dir)
-            result = demo.run(video, str(output), max_frames=max_frames)
+            result = demo.run(video, str(output), max_frames=max_frames, camera=camera)
         except (ValueError, OSError, RuntimeError) as error:
             LOGGER.exception("Video reconstruction failed")
             raise gr.Error(f"Reconstruction failed: {error}") from error
         status = (
             f"Rendered {result['frames']} frames; {result['rendered_hands']} hand predictions; "
-            f"{result['mesh_pixels']} visible mesh pixels."
+            f"{result['mesh_pixels']} visible mesh pixels. "
+            f"Camera: {result['camera_mode']}; output {result['width']} x {result['height']}."
         )
         if result["mesh_pixels"] == 0:
             status += " No visible hand overlay was produced; inspect the input and predictions."
@@ -203,6 +224,10 @@ def create_space(
         if not mano_dir:
             gr.Markdown(f"**Rendering not configured.** {MISSING_MANO}")
         video = gr.Video(label="Input video", sources=["upload"])
+        camera_intrinsics = gr.Textbox(
+            label="Optional camera intrinsics (pixels): fx, fy, cx, cy",
+            value="", placeholder="Leave blank if unknown", info=CAMERA_HELP,
+        )
         with gr.Tab("Mesh overlay"):
             gr.Markdown(
                 f"Blue: left hand; orange: right hand. Silent output. Up to {max_frames} frames. "
@@ -212,7 +237,8 @@ def create_space(
             result = gr.Video(label="Rendered video")
             status = gr.Textbox(label="Status", interactive=False)
             if mano_dir:
-                render.click(render_video, video, [result, status], api_name="render", concurrency_limit=1,
+                render.click(render_video, [video, camera_intrinsics], [result, status],
+                             api_name="render", concurrency_limit=1,
                              concurrency_id="gpu")
         with gr.Tab("Model check"):
             gr.Markdown(
@@ -221,7 +247,8 @@ def create_space(
             )
             check = gr.Button("Check model (first 16 frames)")
             report = gr.JSON(label="Inference check")
-            check.click(check_model, video, report, api_name="check_model", concurrency_limit=1,
+            check.click(check_model, [video, camera_intrinsics], report,
+                        api_name="check_model", concurrency_limit=1,
                         concurrency_id="gpu")
     return app.queue(max_size=4)
 

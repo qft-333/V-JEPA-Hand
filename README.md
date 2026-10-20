@@ -11,6 +11,8 @@ two-hand reconstruction and camera-motion estimation.
 
 Input an egocentric video and output a hand-mesh overlay: **blue for the left
 hand, orange for the right hand**. No hand boxes or camera calibration are required.
+Without calibration, focal lengths are predicted and the principal point is assumed
+to be at the image center; an unknown principal-point offset cannot be corrected.
 
 ### Setup
 
@@ -72,7 +74,36 @@ The tool processes the full video in consecutive, non-overlapping 16-frame windo
 (frames 1-16, 17-32, 33-48, ...), without averaging or smoothing across windows.
 A short final window is padded by repeating its last frame, and padded
 predictions are discarded. Every source frame is written exactly once, preserving
-frame timestamps and the original view.
+frame timestamps and, unless calibrated rectification is requested, the original view.
+
+### Optional camera calibration
+
+If known, provide `fx fy cx cy` **in pixels at the input video's resolution**:
+
+```bash
+python demo.py --mano-dir /path/to/mano --input input.mp4 --output corrected.mp4 \
+  --intrinsics 600 610 320 240
+```
+
+These numbers are only an example for a calibrated 640 x 480 video, not universal
+defaults. Use calibration matching the actual uploaded frames after any previous
+resizing/cropping. Do not pass normalized `fx/W`, `fy/H` to this option.
+
+The calibrated path resamples with `sx=min(fx,fy)/fx` and `sy=min(fx,fy)/fy`
+(no upscaling), then takes an even-sized crop centered on the true principal point.
+Both operations are combined in a single bilinear resampling, including subpixel
+principal-point offsets. The corrected pixel focal lengths are equal and the
+principal point is exactly `(W'/2, H'/2)`. Edge content may be removed.
+The model receives `[f/W', f/H', 0.5, 0.5]`, and rendering uses the same known
+intrinsics rather than the predicted focal lengths. The patch-aligned model resize
+preserves these normalized intrinsics under the training camera convention.
+Equal **pixel** focal lengths do not imply equal normalized values on a rectangular
+image. Output is the **corrected, cropped video** with meshes overlaid.
+
+Omit `--intrinsics` (or leave the web input blank) to keep the existing uncalibrated
+path. Neither path performs lens undistortion: calibrated input must already be
+undistorted with the supplied pinhole intrinsics. Fisheye distortion, variable zoom,
+and time-varying stabilization/crops require separate calibration handling.
 
 Output is a silent H.264 MP4; odd image dimensions receive one pixel of edge
 padding. Default inference uses CUDA/BF16; use `--precision fp32` on GPUs without

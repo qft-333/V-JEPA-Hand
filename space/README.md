@@ -21,6 +21,14 @@ ZeroGPU demo for egocentric hand reconstruction.
 Video inference uses consecutive, non-overlapping 16-frame windows
 (frames 1-16, 17-32, 33-48, ...), without blending or temporal smoothing.
 
+Optional camera input accepts `fx, fy, cx, cy` in **pixels at the uploaded video
+resolution**, not normalized values. When provided, frames are resampled to equal
+pixel focal lengths and cropped around the true principal point. Inference and
+rendering use the corrected calibration; output shows this centered crop.
+Leave blank to predict focal lengths and assume an already-centered principal
+point. Unknown principal-point offsets are not automatically corrected.
+Inputs must already be lens-undistorted; time-varying calibration is unsupported.
+
 The **Model check** runs inference on up to the first 16 frames of an uploaded
 video and reports output validity. It does not produce a rendered video.
 **Mesh overlay** is enabled only when an authorized MANO asset is configured

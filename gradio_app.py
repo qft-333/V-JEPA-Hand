@@ -13,6 +13,7 @@ from pathlib import Path
 import gradio as gr
 import torch
 
+from vjepa_hand.camera import CAMERA_HELP, CameraIntrinsics
 from vjepa_hand.inference import VideoDemo
 from vjepa_hand.loading import DEFAULT_MODEL_ID, load_model
 
@@ -22,7 +23,7 @@ def create_app(demo: VideoDemo, output_dir: Path, max_frames: int = 900) -> gr.B
         raise ValueError("max_frames must be positive")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    def run(video: str | None, progress=gr.Progress()) -> tuple[str, str]:
+    def run(video: str | None, camera_intrinsics: str = "", progress=gr.Progress()) -> tuple[str, str]:
         if not video:
             raise gr.Error("Upload a video first.")
         for previous in output_dir.glob("*.mp4"):
@@ -30,15 +31,20 @@ def create_app(demo: VideoDemo, output_dir: Path, max_frames: int = 900) -> gr.B
                 previous.unlink()
         output = output_dir / f"{uuid.uuid4().hex}.mp4"
         try:
+            camera = CameraIntrinsics.parse(camera_intrinsics)
             result = demo.run(
                 video, str(output),
                 progress=lambda count: progress(min(count / max_frames, 0.99), desc=f"Rendered {count} frames"),
                 max_frames=max_frames,
+                camera=camera,
             )
         except (ValueError, OSError, RuntimeError) as error:
             logging.exception("Video reconstruction failed")
             raise gr.Error(f"Reconstruction failed: {error}") from error
-        return str(output), f"Rendered {result['frames']} frames; {result['rendered_hands']} hand predictions."
+        return str(output), (
+            f"Rendered {result['frames']} frames; {result['rendered_hands']} hand predictions. "
+            f"Camera: {result['camera_mode']}; output {result['width']} x {result['height']}."
+        )
 
     with gr.Blocks(title="V-JEPA Hand", delete_cache=(3600, 3600)) as app:
         gr.Markdown(
@@ -49,9 +55,14 @@ def create_app(demo: VideoDemo, output_dir: Path, max_frames: int = 900) -> gr.B
         with gr.Row():
             video = gr.Video(label="Input video", sources=["upload"])
             result = gr.Video(label="Rendered video")
+        camera_intrinsics = gr.Textbox(
+            label="Optional camera intrinsics (pixels): fx, fy, cx, cy",
+            value="", placeholder="Leave blank if unknown", info=CAMERA_HELP,
+        )
         button = gr.Button("Reconstruct hands", variant="primary")
         status = gr.Textbox(label="Status", interactive=False)
-        button.click(run, inputs=video, outputs=[result, status], concurrency_limit=1, api_name="render")
+        button.click(run, inputs=[video, camera_intrinsics], outputs=[result, status],
+                     concurrency_limit=1, api_name="render")
     return app.queue(max_size=4)
 
 

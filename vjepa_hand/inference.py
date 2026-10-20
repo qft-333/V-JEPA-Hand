@@ -19,6 +19,7 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
+from .camera import CameraIntrinsics, CameraRectification
 from .geometry import HandMeshes
 from .loading import DEFAULT_MODEL_ID, load_model
 from .model import HandPoseModel
@@ -43,6 +44,7 @@ def preprocess(frames: np.ndarray) -> Tensor:
 @torch.inference_mode()
 def predict_parameters(
     model: HandPoseModel, frames: np.ndarray, device: torch.device, precision: str,
+    intrinsic: np.ndarray | None = None,
 ) -> tuple[Tensor, Tensor]:
     count = len(frames)
     if not 1 <= count <= 16:
@@ -51,12 +53,23 @@ def predict_parameters(
         raise ValueError("precision must be bf16 or fp32")
     padded = np.concatenate((frames, np.repeat(frames[-1:], 16 - count, axis=0)))
     video = preprocess(padded).to(device)
+    known = None
+    if intrinsic is not None:
+        known = torch.as_tensor(intrinsic, dtype=torch.float32, device=device)
+        if known.shape != (4,) or not torch.isfinite(known).all() or (known[:2] <= 0).any():
+            raise ValueError("Known normalized intrinsics must contain four finite values and positive focals")
+        if not torch.allclose(known[2:], known.new_tensor([0.5, 0.5]), atol=1e-6, rtol=0):
+            raise ValueError("Known intrinsics require a principal point centered by image rectification")
     context = (
         torch.autocast("cuda", dtype=torch.bfloat16)
         if precision == "bf16" else nullcontext()
     )
     with context:
-        trajectory, intrinsics = model(video)
+        if known is None:
+            trajectory, intrinsics = model(video)
+        else:
+            trajectory, _ = model(video, intrinsic=known.unsqueeze(0))
+            intrinsics = known.unsqueeze(0)
     trajectory = trajectory[0, :count].float().cpu()
     intrinsics = intrinsics[0].float().cpu()
     if not torch.isfinite(trajectory).all() or not torch.isfinite(intrinsics).all():
@@ -86,9 +99,11 @@ class VideoDemo:
         self.meshes = HandMeshes(mano_dir)
 
     @torch.inference_mode()
-    def predict(self, frames: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def predict(
+        self, frames: np.ndarray, intrinsic: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         trajectory, intrinsics = predict_parameters(
-            self.model, frames, self.device, self.precision,
+            self.model, frames, self.device, self.precision, intrinsic,
         )
         presence = trajectory[:, [54, 109]].sigmoid().numpy()
         return self.meshes.vertices(trajectory), presence, intrinsics.numpy()
@@ -97,6 +112,7 @@ class VideoDemo:
         self, input_video: str, output_video: str,
         progress: Callable[[int], None] | None = None,
         max_frames: int | None = None,
+        camera: CameraIntrinsics | None = None,
     ) -> dict[str, int | float | str]:
         source, destination = Path(input_video).resolve(), Path(output_video).resolve()
         if not source.is_file():
@@ -137,10 +153,15 @@ class VideoDemo:
                     times: list[int] = []
                     first_pts = previous_pts = None
                     dimensions = None
+                    rectification = None
 
                     def write_window() -> None:
                         nonlocal count, windows, hands, pixels
-                        vertices, presence, intrinsics = self.predict(np.stack(frames))
+                        batch = np.stack(frames)
+                        if rectification is None:
+                            vertices, presence, intrinsics = self.predict(batch)
+                        else:
+                            vertices, presence, intrinsics = self.predict(batch, rectification.intrinsics)
                         for index, image in enumerate(frames):
                             rendered, hand_count, pixel_count = renderer.render(
                                 image, vertices[index], presence[index], intrinsics, self.threshold,
@@ -180,10 +201,19 @@ class VideoDemo:
                         height, width = image.shape[:2]
                         if dimensions is None:
                             dimensions = (height, width)
+                            if camera is not None:
+                                rectification = CameraRectification(camera, width, height)
+                                width, height = rectification.width, rectification.height
+                                LOGGER.info(
+                                    "Calibrated crop: %dx%d -> %dx%d; normalized intrinsics %s",
+                                    dimensions[1], dimensions[0], width, height, rectification.intrinsics,
+                                )
                             output.width, output.height = width + width % 2, height + height % 2
                             renderer = OverlayRenderer(width, height, self.meshes.faces)
                         elif dimensions != (height, width):
                             raise ValueError("Video resolution changes within the stream")
+                        if rectification is not None:
+                            image = rectification.apply(image)
                         frames.append(image)
                         times.append(pts - first_pts)
                         if len(frames) == 16:
@@ -211,6 +241,8 @@ class VideoDemo:
                 "output": str(destination), "frames": count, "windows": windows,
                 "rendered_hands": hands, "mesh_pixels": pixels,
                 "fps": float(rate),
+                "camera_mode": "calibrated crop" if camera is not None else "predicted focal, assumed center",
+                "width": output.width, "height": output.height,
             }
         finally:
             try:
@@ -234,6 +266,10 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--presence-threshold", type=float, default=0.5)
     result.add_argument("--input", required=True, help="Input video")
     result.add_argument("--output", required=True, help="New output .mp4 path")
+    result.add_argument(
+        "--intrinsics", nargs=4, type=float, metavar=("FX", "FY", "CX", "CY"),
+        help="Optional camera intrinsics in pixels at input video resolution; rectify and output a centered crop",
+    )
     return result
 
 
@@ -241,9 +277,10 @@ def main() -> None:
     args = parser().parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     torch.set_num_threads(4)
+    camera = CameraIntrinsics(*args.intrinsics) if args.intrinsics is not None else None
     model = load_model(args.model, args.device, args.encoder_source, args.revision)
     demo = VideoDemo(model, args.mano_dir, args.precision, args.presence_threshold)
-    print(json.dumps(demo.run(args.input, args.output), indent=2))
+    print(json.dumps(demo.run(args.input, args.output, camera=camera), indent=2))
 
 
 if __name__ == "__main__":
