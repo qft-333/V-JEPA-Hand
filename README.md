@@ -87,18 +87,15 @@ python demo.py --mano-dir /path/to/mano --input input.mp4 --output corrected.mp4
 
 These numbers are only an example for a calibrated 640 x 480 video, not universal
 defaults. Use calibration matching the actual uploaded frames after any previous
-resizing/cropping. Do not pass normalized `fx/W`, `fy/H` to this option.
+resizing/cropping.
 
 The calibrated path resamples with `sx=min(fx,fy)/fx` and `sy=min(fx,fy)/fy`
 (no upscaling), then takes an even-sized crop centered on the true principal point.
 Both operations are combined in a single bilinear resampling, including subpixel
 principal-point offsets. The corrected pixel focal lengths are equal and the
 principal point is exactly `(W'/2, H'/2)`. Edge content may be removed.
-The model receives `[f/W', f/H', 0.5, 0.5]`, and rendering uses the same known
-intrinsics rather than the predicted focal lengths. The patch-aligned model resize
-preserves these normalized intrinsics under the training camera convention.
-Equal **pixel** focal lengths do not imply equal normalized values on a rectangular
-image. Output is the **corrected, cropped video** with meshes overlaid.
+Inference and rendering use the same corrected calibration.
+Output is the **corrected, cropped video** with meshes overlaid.
 
 Omit `--intrinsics` (or leave the web input blank) to keep the existing uncalibrated
 path. Neither path performs lens undistortion: calibrated input must already be

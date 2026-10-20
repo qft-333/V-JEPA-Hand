@@ -22,7 +22,7 @@ Video inference uses consecutive, non-overlapping 16-frame windows
 (frames 1-16, 17-32, 33-48, ...), without blending or temporal smoothing.
 
 Optional camera input accepts `fx, fy, cx, cy` in **pixels at the uploaded video
-resolution**, not normalized values. When provided, frames are resampled to equal
+resolution**. When provided, frames are resampled to equal
 pixel focal lengths and cropped around the true principal point. Inference and
 rendering use the corrected calibration; output shows this centered crop.
 Leave blank to predict focal lengths and assume an already-centered principal

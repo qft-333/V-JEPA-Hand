@@ -12,7 +12,7 @@ from torch.nn import functional as F
 CAMERA_HELP = (
     "Optional: enter fx, fy, cx, cy in PIXELS at the uploaded video's resolution "
     "(for example: 600, 610, 320, 240 for a calibrated 640 x 480 video). "
-    "Do not enter normalized values fx/W or fy/H. Use calibration for the actual "
+    "Use calibration for the actual "
     "uploaded video, after any previous resizing/cropping. With calibration, we "
     "resample to equal pixel focal lengths, crop around the principal point, and "
     "use the corrected intrinsics for inference and rendering. Output shows the "
